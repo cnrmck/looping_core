@@ -19,45 +19,103 @@ def loop_fn(fn):
     By default, all functions called by the loop recieve args but not all of
     them accept args
     """
-    def wrapper(args):
+    def wrapper(args = [], kwargs = {}):
         # there may be a better way to do this with custom exceptions
         argspec = getargspec_fn(fn)
 
         if argspec.args == []:
-            fn()
+            return fn()
         else:
-            fn(args)
+            return fn(*args)
 
     return wrapper
 
+class EnvironmentException(Exception):
+    pass
+
+class Environment(object):
+    def __init__(self, option_list):
+        self.option_list = option_list
+
+    def __getitem__(self, key):
+        item = None
+        for option in self.option_list:
+            try:
+                item = option[key]
+                return item
+
+            except OptionException:
+                pass
+
+        raise EnvironmentException("Key '{}' not found in environment".format(key))
+
+    def __contains__(self, val):
+        for option in self.option_list:
+            try:
+                self.__getitem__(val)
+                return True
+            except EnvironmentException:
+                return False
+
+class OptionException(Exception):
+    pass
+
 class Option(object):
     """
-    This class defines the name of an option, the function it relates to, and the
-    trigger that calls it.
+    This class defines the name of an option, the function it relates to, and the trigger that
+    calls it.
 
     When you create a new option, you should add it to the option_list.
+
+    Trigger can either be a type like int, a single input like 'A', or a list of inputs like
+    ["a", "A"]
     """
-    def __init__(self, name, fn, trigger):
+    def __init__(self, name, fn, trigger, input_modifier = None):
         self.name = name
         self.fn = fn
         self.trigger = trigger
+        self.input_modifier = input_modifier
 
-def build_env(option_list):
-    environment = {}
-    instr_string = ""
+    def __getitem__(self, val):
+        try:
+            if val in self.trigger:
+                return self.fn
+            elif type(val) in self.trigger:
+                return self.fn
 
-    for option in option_list:
-        name = option.name
-        function_name = option.fn
-        trigger = option.trigger
-        option_string = "{}: {}".format(trigger, name)
-        instr_string += '\n' + option_string
-        environment[trigger] = function_name
+        except TypeError:
+            if val == self.trigger:
+                return self.fn
+            elif type(val) == self.trigger:
+                return self.fn
 
-    return environment, instr_string
+        raise OptionException("'{}' has no function in triggers: '{}'".format(val, self.trigger))
 
-def quit_loop(args):
-    return 'quit_loop'
+    def __eq__(self, val):
+        if self.input_modifier is not None:
+            val = self.input_modifier(val)
+
+        try:
+            # if self.__getitem__ does not raise an error then the two are equivalent
+            self.__getitem__(val)
+            return True
+
+        except OptionException:
+            return False
+
+def selection_confirmed(selection):
+    def make_lowercase(string):
+        try:
+            return string.lower()
+        except Exception:
+            pass
+
+    option_list = [ Option("Yes", lambda x: True, ['y', ''], input_modifier = make_lowercase),
+                    Option("No", lambda x: False, 'n', input_modifier = make_lowercase)]
+
+    return loop(option_list = option_list, loop_name = "Is '{}' ok?".format(selection),
+        break_val = None, require_return = False, confirm = False, default_value = True,
+        allow_nothing = True)
 
 def run_command(tokens, environment):
     command_id = tokens[0]
@@ -85,33 +143,68 @@ def handle_resp(resp, environment):
         except SyntaxError:
             pass
 
-        if token in environment or type(token) in environment:
+        if token in environment:
             tokens.append(token)
         else:
-            print("{} not in environment".format(token))
+            print("'{}' not in environment".format(token))
             tokens = None
             break
 
     if tokens is not None:
         return run_command(tokens, environment)
 
-def loop(option_list = [], loop_name = "Default Loop"):
-    environment, per_loop_text = build_env(option_list)
+def build_env(option_list, instr_string = None):
+    environment = Environment(option_list)
 
-    # so that there is always a quit option
-    default_environment = {'q':quit_loop}
-    environment.update(default_environment)
-    per_loop_text += '\nq: Quit {}'.format(loop_name)
+    if instr_string is None:
+        instr_string = ""
 
+    for option in option_list:
+        name = option.name
+        function_name = option.fn
+        triggers = option.trigger
+        option_string = "{}: {}".format(triggers, name)
+        instr_string += '\n' + option_string
+
+    return environment, instr_string
+
+def loop(option_list = [], loop_name = "Default Loop", instr_string = None, break_val = 'q', break_text = 'Quit', require_return = True, confirm = False, default_value = (False, None), allow_nothing = False):
+
+    environment, per_loop_text = build_env(option_list, instr_string)
+
+    if break_val is not None:
+        per_loop_text += '\n{}: {} {}'.format(break_val, break_text, loop_name)
+
+    ret_val = None
     while True:
-        if per_loop_text is not None: print(per_loop_text)
 
-        resp = input_fn("\n> ")
-        if resp.strip() != '':
-            ret_val = handle_resp(resp, environment)
+        while True:
+            if per_loop_text is not None: print(per_loop_text)
 
-            if ret_val == 'quit_loop':
-                break
+            resp = input_fn("\n> ")
+            if resp.strip() != '' or allow_nothing is True:
+                if resp == break_val or break_val is None:
+                    if ret_val is not None or require_return is False:
+                        if default_value[0] is True:
+                            ret_val = default_value[1]
+
+                        break
+                    else:
+                        print("\nSelection required\n")
+
+                else:
+                    ret_val = handle_resp(resp, environment)
+
+            else:
+                print("\nInput required\n")
+
+        if confirm is not True or selection_confirmed(ret_val) is True:
+            break
+        else:
+            continue
+
+    return ret_val
+
 
 # end core loop logic
 
@@ -120,7 +213,7 @@ def main():
     @loop_fn
     def example_fn(args):
         print("SUCCESS")
-        print(args)
+        return args
 
     # define recursive loop
     @loop_fn
@@ -128,7 +221,8 @@ def main():
         option_list = [
             Option("Input a number to call a function and print that number", example_fn, int),
         ]
-        loop(option_list = option_list, loop_name = "Deeper Loop")
+        ret_val = loop(option_list = option_list, loop_name = "Deeper Loop")
+        print("In the Deeper Loop, the example_fn returned: {}".format(ret_val))
 
     # end functions called by the loop
 
