@@ -183,7 +183,7 @@ def loop(option_list = [], loop_name = "Default Loop", instr_string = None, brea
 
             resp = input_fn("\n> ")
             if resp.strip() != '' or allow_nothing is True:
-                if resp == break_val or break_val is None:
+                if resp.lower() == break_val or break_val is None:
                     if ret_val is not None or require_return is False:
                         if default_value[0] is True:
                             ret_val = default_value[1]
